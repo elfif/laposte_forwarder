@@ -32,6 +32,18 @@ ARCHIVE="/tmp/laposte_forwarder-${TAG}.tar.gz"
 BACKUP_DIR="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
 BACKED_UP=0
 
+# The archive ships secrets/.gitkeep, so $PROJECT_DIR/secrets already exists
+# after extraction: copy the backup's CONTENTS (src/.) or cp nests the dir.
+restore_config() {
+    cp -a "$BACKUP_DIR/compose.yaml" "$PROJECT_DIR/compose.yaml"
+    if [[ -d "$BACKUP_DIR/secrets" ]]; then
+        mkdir -p "$PROJECT_DIR/secrets"
+        cp -a "$BACKUP_DIR/secrets/." "$PROJECT_DIR/secrets/"
+        chmod 700 "$PROJECT_DIR/secrets"
+        chmod 644 "$PROJECT_DIR"/secrets/*.txt
+    fi
+}
+
 # After a successful backup, a later failure must not leave the project dir
 # without its config: restore it so a manual `docker compose up -d` can start
 # the stack again.
@@ -40,12 +52,7 @@ restore_config_on_failure() {
     if [[ $rc -ne 0 && $BACKED_UP -eq 1 ]]; then
         log "deploy failed (exit $rc); restoring config from $BACKUP_DIR"
         mkdir -p "$PROJECT_DIR"
-        cp -a "$BACKUP_DIR/compose.yaml" "$PROJECT_DIR/compose.yaml" 2>/dev/null || true
-        if [[ -d "$BACKUP_DIR/secrets" ]]; then
-            cp -a "$BACKUP_DIR/secrets" "$PROJECT_DIR/secrets"
-            chmod 700 "$PROJECT_DIR/secrets" 2>/dev/null || true
-            chmod 644 "$PROJECT_DIR"/secrets/*.txt 2>/dev/null || true
-        fi
+        restore_config || true
     fi
     exit "$rc"
 }
@@ -79,12 +86,7 @@ tar -xzf "$ARCHIVE" -C "$PROJECT_DIR"
 rm -f "$ARCHIVE"
 
 log "restoring config"
-cp -a "$BACKUP_DIR/compose.yaml" "$PROJECT_DIR/compose.yaml"
-if [[ -d "$BACKUP_DIR/secrets" ]]; then
-    cp -a "$BACKUP_DIR/secrets" "$PROJECT_DIR/secrets"
-    chmod 700 "$PROJECT_DIR/secrets"
-    chmod 644 "$PROJECT_DIR"/secrets/*.txt
-fi
+restore_config
 
 log "starting containers"
 (cd "$PROJECT_DIR" && docker compose up -d && docker compose ps)
