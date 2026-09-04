@@ -1,0 +1,13 @@
+# Real deployment config: contains email addresses and per-account settings.
+# Only the template compose.example.yaml is committed.
+compose.yaml
+docker-compose.yaml
+docker-compose.yml
+
+# Credentials. Never commit anything in here except the .gitkeep placeholder.
+secrets/*
+!secrets/.gitkeep
+
+# Env files, in case any are ever created locally.
+*.env
+!*.env.example

@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+#
+# laposte-forward -- forward one laposte.net INBOX to one Gmail account via imapsync.
+#
+# Runs inside the gilleslamiral/imapsync container (bind-mounted, see compose.yaml).
+#
+# Usage:
+#   laposte-forward --loop                     # container mode: sync forever, every INTERVAL_SECONDS
+#   laposte-forward --once                     # single sync, exits with imapsync's exit code
+#   laposte-forward --once --window-days 30    # catch-up after an outage (see docs/RUNBOOK.md)
+#
+# Configuration comes from the environment (set in compose.yaml):
+#   LAPOSTE_USER            full laposte.net address (required)
+#   GMAIL_USER              full Gmail address (required)
+#   PASSFILE1               path to laposte password file, e.g. /run/secrets/alice_laposte (required)
+#   PASSFILE2               path to Gmail app-password file, e.g. /run/secrets/alice_gmail (required)
+#   WINDOW_DAYS             only consider mail younger than this many days (default 1)
+#   INTERVAL_SECONDS        pause between syncs in --loop mode (default 60)
+#   DELETE_AFTER_FORWARD    "true" to delete on laposte after a confirmed copy (default false)
+#   DRY_RUN                 "true" to pass --dry to imapsync (default false)
+#   HEALTHCHECK_URL         optional dead-man's-switch URL, pinged after each successful sync
+
+set -u
+
+WINDOW_DAYS="${WINDOW_DAYS:-1}"
+INTERVAL_SECONDS="${INTERVAL_SECONDS:-60}"
+DELETE_AFTER_FORWARD="${DELETE_AFTER_FORWARD:-false}"
+DRY_RUN="${DRY_RUN:-false}"
+HEALTHCHECK_URL="${HEALTHCHECK_URL:-}"
+HEARTBEAT_FILE="${HEARTBEAT_FILE:-/tmp/heartbeat}"
+
+log() {
+    # Container logs carry no timestamps of their own in all viewers; add one.
+    printf '%s [laposte-forward] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
+}
+
+die() {
+    log "FATAL: $*" >&2
+    exit 64
+}
+
+usage() {
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-0}"
+}
+
+mode=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --loop) mode="loop" ;;
+        --once) mode="once" ;;
+        --window-days)
+            [[ $# -ge 2 ]] || die "--window-days needs a value"
+            WINDOW_DAYS="$2"
+            shift
+            ;;
+        -h|--help) usage 0 ;;
+        *) die "unknown argument: $1 (try --help)" ;;
+    esac
+    shift
+done
+[[ -n "$mode" ]] || usage 64
+
+[[ -n "${LAPOSTE_USER:-}" ]] || die "LAPOSTE_USER is not set"
+[[ -n "${GMAIL_USER:-}"   ]] || die "GMAIL_USER is not set"
+[[ -n "${PASSFILE1:-}"    ]] || die "PASSFILE1 is not set"
+[[ -n "${PASSFILE2:-}"    ]] || die "PASSFILE2 is not set"
+[[ -r "$PASSFILE1" ]] || die "cannot read PASSFILE1 at $PASSFILE1 (secret not mounted?)"
+[[ -r "$PASSFILE2" ]] || die "cannot read PASSFILE2 at $PASSFILE2 (secret not mounted?)"
+[[ "$WINDOW_DAYS" =~ ^[0-9]+$ ]] || die "WINDOW_DAYS must be a whole number, got '$WINDOW_DAYS'"
+
+ping_healthcheck() {
+    [[ -n "$HEALTHCHECK_URL" ]] || return 0
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsS -m 10 -o /dev/null "$HEALTHCHECK_URL" || log "warning: healthcheck ping failed"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -T 10 -O /dev/null "$HEALTHCHECK_URL" || log "warning: healthcheck ping failed"
+    fi
+}
+
+run_sync() {
+    # IMAP date-time format demands English month abbreviations; LC_ALL=C guards
+    # against a localized date(1) emitting e.g. "02-août-2026".
+    local since
+    since=$(LC_ALL=C date -u -d "${WINDOW_DAYS} days ago" +%d-%b-%Y)
+
+    # SEARCH SINCE matches on INTERNALDATE (arrival time), unlike imapsync's
+    # --maxage which trusts the sender-supplied Date: header. It is applied to
+    # BOTH sides, which also keeps imapsync from enumerating the whole Gmail
+    # INBOX on every run. Dedup is imapsync's default header (Message-ID)
+    # matching: a crash between APPEND and delete re-forwards, never loses.
+    local args=(
+        --host1 imap.laposte.net --port1 993 --ssl1
+        --user1 "$LAPOSTE_USER" --passfile1 "$PASSFILE1"
+        --gmail2
+        --user2 "$GMAIL_USER" --passfile2 "$PASSFILE2"
+        --folder INBOX
+        --search "SINCE ${since}"
+        --addheader
+        --nofoldersizes --nofoldersizesatend
+        --noreleasecheck
+        --errorsmax 10
+        --tmpdir /tmp
+    )
+
+    if [[ "$DELETE_AFTER_FORWARD" == "true" ]]; then
+        # Delete (and expunge) on laposte only after the message is confirmed
+        # copied. From this point on Gmail holds the only copy.
+        args+=( --delete1 --expunge1 )
+    fi
+    if [[ "$DRY_RUN" == "true" ]]; then
+        args+=( --dry )
+    fi
+
+    imapsync "${args[@]}"
+}
+
+if [[ "$mode" == "once" ]]; then
+    log "single sync: $LAPOSTE_USER -> $GMAIL_USER (window ${WINDOW_DAYS}d," \
+        "delete=$DELETE_AFTER_FORWARD, dry=$DRY_RUN)"
+    run_sync
+    exit $?
+fi
+
+# --loop mode -----------------------------------------------------------------
+
+running=1
+sleep_pid=""
+on_term() {
+    log "received stop signal, shutting down"
+    running=0
+    [[ -n "$sleep_pid" ]] && kill "$sleep_pid" 2>/dev/null
+}
+trap on_term TERM INT
+
+log "starting loop: $LAPOSTE_USER -> $GMAIL_USER every ${INTERVAL_SECONDS}s" \
+    "(window ${WINDOW_DAYS}d, delete=$DELETE_AFTER_FORWARD, dry=$DRY_RUN)"
+
+failures=0
+while (( running )); do
+    if run_sync; then
+        failures=0
+        # The healthcheck in compose.yaml compares this file's age; a container
+        # that keeps failing to sync goes unhealthy even though it is running.
+        date -u +%s > "$HEARTBEAT_FILE"
+        ping_healthcheck
+    else
+        rc=$?
+        (( failures++ ))
+        log "sync failed with exit code $rc (${failures} consecutive), will retry"
+    fi
+
+    (( running )) || break
+    # Background sleep + wait, so the TERM trap fires immediately instead of
+    # docker having to wait out its kill timeout.
+    sleep "$INTERVAL_SECONDS" &
+    sleep_pid=$!
+    wait "$sleep_pid" 2>/dev/null
+    sleep_pid=""
+done
+
+log "stopped"
+exit 0
