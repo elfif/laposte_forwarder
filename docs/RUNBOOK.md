@@ -66,6 +66,25 @@ docker compose run --rm -e DRY_RUN=true alice /usr/local/bin/laposte-forward --o
 Note: changing the Google account's *main* password revokes all its app
 passwords, so expect to do this after any Google password change.
 
+## Releasing and rolling back
+
+Deploys are driven by tags (see "CI deploy" in [DEPLOY.md](DEPLOY.md)). To
+release:
+
+```bash
+git tag prod-release-20260904
+git push origin prod-release-20260904
+```
+
+The Action SSHs to the VPS and runs `scripts/deploy.sh`, which swaps the
+project tree to that tag while keeping the local `compose.yaml` and `secrets/`.
+Each deploy leaves a timestamped copy of that config under
+`~/laposte_forwarder_backups/` (last 10 kept).
+
+To roll back, re-tag the previous release (e.g. `git tag prod-release-rollback1
+<old-commit>` and push it), or on the VPS restore the previous backup and
+re-run `docker compose up -d`.
+
 ## Upgrading imapsync
 
 The image is pinned by tag and digest in the compose anchor. To upgrade:

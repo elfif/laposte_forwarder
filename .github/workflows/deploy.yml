@@ -1,0 +1,35 @@
+name: Deploy to VPS
+
+on:
+  push:
+    tags:
+      - "prod-release-*"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Install SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Trust VPS host key
+        env:
+          SSH_KNOWN_HOSTS: ${{ vars.SSH_KNOWN_HOSTS }}
+        run: |
+          printf '%s\n' "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+
+      - name: Deploy on VPS
+        env:
+          SSH_LOGIN: ${{ vars.SSH_LOGIN }}
+          SSH_VPS_IP: ${{ vars.SSH_VPS_IP }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ssh -o IdentitiesOnly=yes -i ~/.ssh/deploy_key \
+            "${SSH_LOGIN}@${SSH_VPS_IP}" \
+            "bash ~/laposte_forwarder/scripts/deploy.sh '${TAG}'"

@@ -130,7 +130,42 @@ docker compose up -d
 docker compose ps    # every container should reach "healthy" within ~2 minutes
 ```
 
-## 5. Set up the dead-man's-switch (strongly recommended)
+## 5. CI deploy (optional)
+
+Releases are deployed by pushing a tag that starts with `prod-release-`.
+[`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) SSHs into the
+VPS and runs [`scripts/deploy.sh`](../scripts/deploy.sh), which fetches the tag,
+stops the stack, backs up `compose.yaml` and `secrets/`, replaces the project
+tree, restores the config, and brings the stack back up.
+
+### GitHub configuration
+
+| Name | Type | Purpose |
+| --- | --- | --- |
+| `SSH_PRIVATE_KEY` | secret | Private key the Action uses to SSH into the VPS |
+| `SSH_LOGIN` | variable | SSH user on the VPS |
+| `SSH_VPS_IP` | variable | VPS hostname or IP |
+| `SSH_KNOWN_HOSTS` | variable | Output of `ssh-keyscan <vps-ip>` |
+
+Two different keys, do not reuse them:
+
+- Action → VPS: the key pair behind `SSH_PRIVATE_KEY`; put the public half in
+  `~/.ssh/authorized_keys` for `SSH_LOGIN`.
+- VPS → GitHub: a **read-only deploy key** on this (private) repo, installed as
+  `~/.ssh/` on the VPS, so the deploy script can `git fetch`.
+
+### One-time VPS bootstrap
+
+```bash
+# Read-only deploy key for GitHub, then:
+git clone --bare git@github.com:<org>/<repo>.git ~/laposte_forwarder.git
+```
+
+The working tree at `~/laposte_forwarder` must already contain
+`scripts/deploy.sh` (it does once this file is merged and the tree is current).
+`SSH_LOGIN` must be able to run `docker compose` (docker group or root).
+
+## 6. Set up the dead-man's-switch (strongly recommended)
 
 A container can be "running" while every sync fails (expired password, La Poste
 block). Two layers catch this:
