@@ -24,7 +24,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${LAPOSTE_PROJECT_DIR}:${LAPOSTE_PROJECT_DIR}
-    working_dir: ${LAPOSTE_PROJECT_DIR}
+    # Stay in the image WORKDIR (/app). PROJECT_DIR is only for compose/fs access;
+    # overriding working_dir to the host mount makes `node dist/index.js` miss.
     expose:
       - "3000"
     healthcheck:
