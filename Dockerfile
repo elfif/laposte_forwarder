@@ -4,7 +4,7 @@
 #   - the host is arm64 (the official image is amd64-only), or
 #   - the official image's base (debian:bullseye, EOL) becomes a concern.
 #
-# Usage: in compose.yaml, replace the "image:" line of the x-forwarder anchor
+# Usage: in a forwarder service, replace the "image:" line
 # with "build: ." and run `docker compose build`.
 #
 # Derived from the author's Dockerfile (https://imapsync.lamiral.info/INSTALL.d/Dockerfile)

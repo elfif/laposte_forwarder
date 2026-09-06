@@ -1,6 +1,5 @@
-# Real deployment config: contains email addresses and per-account settings.
-# Only the template compose.example.yaml is committed.
-compose.yaml
+# Per-account overlay: written by the API, contains addresses.
+compose.forwarders.yaml
 docker-compose.yaml
 docker-compose.yml
 
@@ -11,3 +10,13 @@ secrets/*
 # Env files, in case any are ever created locally.
 *.env
 !*.env.example
+
+# Per-run stats JSONL (directory placeholder is kept).
+data/stats/*
+!data/stats/.gitkeep
+
+# Node / Vite build output.
+api/node_modules/
+api/dist/
+web/node_modules/
+web/dist/

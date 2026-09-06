@@ -1,0 +1,17 @@
+.git
+.gitignore
+**/.env
+**/node_modules
+**/dist
+secrets
+data
+api
+docs
+scripts
+bin
+compose*.yaml
+Dockerfile
+README.md
+*.md
+web/node_modules
+web/dist

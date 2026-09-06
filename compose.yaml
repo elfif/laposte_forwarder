@@ -1,0 +1,58 @@
+# Platform stack: Caddy (TLS + SPA) and the control API.
+# Per-account forwarders live in compose.forwarders.yaml (gitignored, API-owned).
+#
+# Copy .env.example to .env and set UI_PASSWORD, UI_SESSION_SECRET, and
+# LAPOSTE_PROJECT_DIR (absolute host path of this directory) before `up`.
+#
+# Forwarder containers still have no "ports:" — the imapsync image bundles a
+# web UI (servimapsync) that must not be exposed on a box holding mail credentials.
+
+name: laposte_forwarder
+
+services:
+  api:
+    build:
+      context: ./api
+    container_name: laposte-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PROJECT_DIR: ${LAPOSTE_PROJECT_DIR}
+      PORT: "3000"
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${LAPOSTE_PROJECT_DIR}:${LAPOSTE_PROJECT_DIR}
+    working_dir: ${LAPOSTE_PROJECT_DIR}
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    container_name: laposte-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:-forwarder.skilphi.com}
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  caddy_data:
+  caddy_config:

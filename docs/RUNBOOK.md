@@ -2,22 +2,27 @@
 
 Day-2 operations. First-time setup is in [DEPLOY.md](DEPLOY.md).
 
+The web UI at `https://forwarder.skilphi.com` is the usual control surface:
+status, start/stop, add, edit destination/secrets, delete-after-forward, and
+delete. CLI below is for logs, catch-up after an outage, and image upgrades.
+
 ## Daily driving
 
 ```bash
-docker compose ps                      # container + health state per account
-docker compose logs -f alice           # follow one account
+docker compose ps                      # platform + every forwarder
+docker compose logs -f api             # control API
+docker compose logs -f phi             # one account
 docker compose logs --since 1h         # everything recent
-docker compose restart alice           # bounce one account
-docker compose up -d                   # apply compose.yaml changes
 ```
 
-Logs are capped (10 MB x 3 files per container, set in the compose anchor), so
-they can be left alone forever.
+Logs are capped (10 MB x 3 files per forwarder), so they can be left alone
+forever.
 
-A container shown as `unhealthy` means no successful sync for 5+ minutes while
-the process is still running - almost always an authentication failure. Check
-its logs first.
+A card shown as **unhealthy** (or `unhealthy` in `docker compose ps`) means no
+successful sync for 5+ minutes while the process is still running — almost
+always an authentication failure. Check that account's logs first.
+
+`docker compose down` stops forwarders **and** the UI (Caddy + API).
 
 ## Recovering from an outage (IMPORTANT)
 
@@ -31,7 +36,7 @@ After any outage, run a catch-up with a window comfortably larger than the
 downtime:
 
 ```bash
-docker compose run --rm alice /usr/local/bin/laposte-forward --once --window-days 30
+docker compose run --rm phi /usr/local/bin/laposte-forward --once --window-days 30
 ```
 
 This is safe to run repeatedly: duplicate detection skips anything already in
@@ -43,25 +48,21 @@ account holding years of mail), a large `--window-days` will forward *and
 delete* everything in that window. If unsure, preview first:
 
 ```bash
-docker compose run --rm -e DRY_RUN=true alice /usr/local/bin/laposte-forward --once --window-days 30
+docker compose run --rm -e DRY_RUN=true phi /usr/local/bin/laposte-forward --once --window-days 30
 ```
 
 ## Adding an account
 
-1. In `compose.yaml`: duplicate a service block and its two `secrets:` entries
-   (the template has a commented-out `bob` to copy).
-2. Create the two password files in `secrets/`, mode `644` (the directory is
-   `700`; see the permissions rationale in [DEPLOY.md](DEPLOY.md)).
-3. Follow the phased rollout in [DEPLOY.md](DEPLOY.md) for the new account -
-   in particular, keep `DELETE_AFTER_FORWARD: "false"` until validated.
+Use **Add forwarder** in the UI. Keep delete-after-forward off until the
+account has been validated ([DEPLOY.md](DEPLOY.md) phases 1–3).
 
 ## Rotating a password
 
 1. Change the password / create the new Gmail app password.
-2. Update the file in `secrets/`.
-3. `docker compose up -d --force-recreate alice` - secrets are mounted at
-   container creation, so a plain restart is not enough for compose secrets on
-   some versions; recreation is always correct.
+2. In the UI, edit the forwarder and paste the new secret(s). Leave a field
+   blank to keep the current value. Secrets are never displayed.
+3. The API recreates the container (`--force-recreate`); a plain restart is
+   not enough for Compose secrets on some versions.
 
 Note: changing the Google account's *main* password revokes all its app
 passwords, so expect to do this after any Google password change.
@@ -77,37 +78,40 @@ git push origin prod-release-20260904
 ```
 
 The Action SSHs to the VPS and runs `scripts/deploy.sh`, which swaps the
-project tree to that tag while keeping the local `compose.yaml` and `secrets/`.
-Each deploy leaves a timestamped copy of that config under
-`~/laposte_forwarder_backups/` (last 10 kept).
+project tree to that tag while keeping `.env`, `compose.forwarders.yaml`,
+`secrets/`, and `data/`. Platform `compose.yaml` always comes from git. Each
+deploy leaves a timestamped copy under `~/laposte_forwarder_backups/` (last 10
+kept).
 
 To roll back, re-tag the previous release (e.g. `git tag prod-release-rollback1
-<old-commit>` and push it), or on the VPS restore the previous backup and
-re-run `docker compose up -d`.
+<old-commit>` and push it), or on the VPS restore the previous backup's
+`.env` / overlay / secrets / data and re-run `docker compose up -d --build`.
 
 ## Upgrading imapsync
 
-The image is pinned by tag and digest in the compose anchor. To upgrade:
+The image is pinned by tag and digest (`IMAPSYNC_IMAGE` in `.env`, used when
+the API creates a forwarder, and the `image:` line of existing overlay
+services). To upgrade:
 
 ```bash
-# See what tags exist / current digest:
 curl -s https://hub.docker.com/v2/repositories/gilleslamiral/imapsync/tags/2.319 | python3 -m json.tool
 ```
 
-Pick the new tag, fetch its digest the same way, update the `image:` line in
-`compose.yaml` (and `compose.example.yaml` for the next deployment), then
-`docker compose up -d`. Watch one account's logs through a full cycle before
-walking away.
+Pick the new tag, fetch its digest the same way, update `IMAPSYNC_IMAGE` in
+`.env` and each overlay `image:` (or recreate accounts from the UI after
+changing the env), then `docker compose up -d`. Watch one account's logs
+through a full cycle before walking away.
 
 ## Moving to another VPS
 
-1. New host: install Docker (see [DEPLOY.md](DEPLOY.md)), clone the repo.
-2. Copy `compose.yaml` and `secrets/` from the old host
-   (`scp -rp`, they are gitignored by design).
+1. New host: install Docker (see [DEPLOY.md](DEPLOY.md)), clone the repo, copy
+   `.env.example` to `.env` and set `LAPOSTE_PROJECT_DIR` to the **new** path.
+2. Copy `.env` values (except `LAPOSTE_PROJECT_DIR`), `compose.forwarders.yaml`,
+   `secrets/`, and `data/` from the old host (`scp -rp`).
 3. Old host: `docker compose down`. Never run both hosts at once with deletion
    enabled - it works (dedup is server-side state), but debugging anything
    with two writers is unpleasant.
-4. New host: `docker compose up -d`, then send a test mail per account.
+4. New host: `docker compose up -d --build`, then send a test mail per account.
 5. Expect fresh Google "new sign-in" alerts from the new IP; approve them.
 
 ## Things to know
@@ -131,3 +135,6 @@ walking away.
   a run finishes, and `docker compose run` catch-ups share Gmail-side dedup
   with the loop, so worst case is a re-forward that Gmail's Message-ID
   matching filters out.
+- **The API has root-equivalent access** via the Docker socket. It is only
+  reachable through Caddy on HTTPS, behind the UI password. Do not publish
+  the API port on the host.

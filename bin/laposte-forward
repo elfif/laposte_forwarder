@@ -19,6 +19,8 @@
 #   DELETE_AFTER_FORWARD    "true" to delete on laposte after a confirmed copy (default false)
 #   DRY_RUN                 "true" to pass --dry to imapsync (default false)
 #   HEALTHCHECK_URL         optional dead-man's-switch URL, pinged after each successful sync
+#   FORWARDER_ID            slug used as the stats filename (optional; stats skipped if unset)
+#   STATS_DIR               directory for per-run JSONL stats (default /var/lib/laposte-forward)
 
 set -u
 
@@ -28,6 +30,8 @@ DELETE_AFTER_FORWARD="${DELETE_AFTER_FORWARD:-false}"
 DRY_RUN="${DRY_RUN:-false}"
 HEALTHCHECK_URL="${HEALTHCHECK_URL:-}"
 HEARTBEAT_FILE="${HEARTBEAT_FILE:-/tmp/heartbeat}"
+FORWARDER_ID="${FORWARDER_ID:-}"
+STATS_DIR="${STATS_DIR:-/var/lib/laposte-forward}"
 
 log() {
     # Container logs carry no timestamps of their own in all viewers; add one.
@@ -40,7 +44,7 @@ die() {
 }
 
 usage() {
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -112,7 +116,36 @@ run_sync() {
         args+=( --dry )
     fi
 
-    imapsync "${args[@]}"
+    local tmp rc=0 transferred=0
+    tmp=$(mktemp)
+    imapsync "${args[@]}" >"$tmp" 2>&1 || rc=$?
+    cat "$tmp"
+    if line=$(grep -E 'Messages transferred' "$tmp" | tail -n1); then
+        if [[ "$line" =~ :[[:space:]]*([0-9]+) ]]; then
+            transferred="${BASH_REMATCH[1]}"
+        fi
+    fi
+    rm -f "$tmp"
+    if [[ "$rc" -eq 0 ]]; then
+        record_stats true "$transferred"
+    else
+        record_stats false "$transferred"
+    fi
+    return "$rc"
+}
+
+record_stats() {
+    local ok="$1"
+    local transferred="$2"
+    [[ -n "$FORWARDER_ID" ]] || return 0
+    [[ -d "$STATS_DIR" ]] || return 0
+    [[ "$FORWARDER_ID" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || return 0
+    [[ "$transferred" =~ ^[0-9]+$ ]] || transferred=0
+    local ts
+    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '{"ts":"%s","ok":%s,"transferred":%s}\n' "$ts" "$ok" "$transferred" \
+        >>"$STATS_DIR/${FORWARDER_ID}.jsonl" \
+        || log "warning: could not write stats to $STATS_DIR/${FORWARDER_ID}.jsonl"
 }
 
 if [[ "$mode" == "once" ]]; then

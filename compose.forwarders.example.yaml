@@ -1,0 +1,59 @@
+# Example overlay. Live accounts are in compose.forwarders.yaml (gitignored),
+# which the API writes. Do not copy this file into production as-is.
+#
+# Forwarder containers must not publish ports: the imapsync image bundles a
+# web UI (servimapsync) that must not be exposed on a box holding mail credentials.
+
+services:
+  alice:
+    image: gilleslamiral/imapsync:2.319@sha256:161336e1a6db587bc42ea1126cfc9b6afa67ea92b408ea4c4454f7f771561aa4
+    container_name: laposte-fwd-alice
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./bin/laposte-forward:/usr/local/bin/laposte-forward:ro
+      - ./data/stats:/var/lib/laposte-forward
+    command:
+      - /usr/local/bin/laposte-forward
+      - --loop
+    environment:
+      FORWARDER_ID: alice
+      LAPOSTE_USER: alice@laposte.net
+      GMAIL_USER: alice.example@gmail.com
+      PASSFILE1: /run/secrets/alice_laposte
+      PASSFILE2: /run/secrets/alice_gmail
+      WINDOW_DAYS: "1"
+      INTERVAL_SECONDS: "60"
+      DELETE_AFTER_FORWARD: "false"
+      HEALTHCHECK_URL: ""
+      STATS_DIR: /var/lib/laposte-forward
+    secrets:
+      - alice_laposte
+      - alice_gmail
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test -f /tmp/heartbeat && test $(( $(date +%s) - $(cat /tmp/heartbeat) )) -lt 300
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 2m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  alice_laposte:
+    file: ./secrets/alice_laposte.txt
+  alice_gmail:
+    file: ./secrets/alice_gmail.txt
